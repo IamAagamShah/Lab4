@@ -2,10 +2,9 @@ using Amazon.Lambda.Core;
 using Amazon.Lambda.S3Events;
 using Amazon.S3;
 using Amazon.S3.Model;
+using Amazon.StepFunctions;
+using Amazon.StepFunctions.Model;
 using GrapeCity.Documents.Imaging;
-using System;
-using System.IO;
-using System.Threading.Tasks;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
@@ -14,7 +13,9 @@ namespace ImagesToThumbnail
     public class Function
     {
         private const string DestinationBucketName = "imaging-destination"; // Replace with your destination bucket name
+        private const string StateMachineName = "ImageProcessingStateMachine"; // Replace with your state machine name
         private readonly IAmazonS3 _s3Client = new AmazonS3Client();
+        private readonly IAmazonStepFunctions _stepFunctionsClient = new AmazonStepFunctionsClient();
 
         public async Task FunctionHandler(S3Event evnt, ILambdaContext context)
         {
@@ -26,7 +27,7 @@ namespace ImagesToThumbnail
                     var key = record.S3.Object.Key;
 
                     // Check if the event is for the original-images bucket
-                    if (bucketName != "originall-images")
+                    if (bucketName != "original-images")
                     {
                         context.Logger.LogLine($"Ignoring non-original-images bucket: {bucketName}");
                         continue;
@@ -67,12 +68,65 @@ namespace ImagesToThumbnail
                         }
                     }
                 }
+
+                // Automate the state machine creation
+                await CreateStateMachine();
             }
             catch (Exception ex)
             {
                 context.Logger.LogLine($"Error: {ex.Message}");
                 throw;
             }
+        }
+
+        private async Task CreateStateMachine()
+        {
+            // Define your state machine definition (Amazon States Language or ASL)
+            var stateMachineDefinition = @"
+                {
+                    ""Comment"": ""Image Processing State Machine"",
+                    ""StartAt"": ""GenerateThumbnail"",
+                    ""States"": {
+                        ""GenerateThumbnail"": {
+                            ""Type"": ""Task"",
+                            ""Resource"": ""arn:aws:lambda:ca-central-1:024255299146:function:Images2Thumbnail"",
+                            ""End"": true
+                        }
+                        // Add more states as needed
+                    }
+                }
+            ";
+
+            // Create state machine request
+            var createStateMachineRequest = new CreateStateMachineRequest
+            {
+                Name = StateMachineName,
+                Definition = stateMachineDefinition,
+                RoleArn = "arn:aws:iam::024255299146:role/thumbnail" // Replace with your state machine execution role ARN
+            };
+
+            // Create and deploy state machine
+            var createStateMachineResponse = await _stepFunctionsClient.CreateStateMachineAsync(createStateMachineRequest);
+            var stateMachineArn = createStateMachineResponse.StateMachineArn;
+
+            // Start state machine execution (optional)
+            await StartStateMachineExecution(stateMachineArn);
+        }
+
+        private async Task StartStateMachineExecution(string stateMachineArn)
+        {
+            // Start state machine execution request
+            var startExecutionRequest = new StartExecutionRequest
+            {
+                StateMachineArn = stateMachineArn,
+                Input = "{}" // Optionally, provide input data in JSON format
+            };
+
+            // Start state machine execution
+            var startExecutionResponse = await _stepFunctionsClient.StartExecutionAsync(startExecutionRequest);
+            var executionArn = startExecutionResponse.ExecutionArn;
+
+            // Optionally, handle execution response or monitor execution status
         }
     }
 }
